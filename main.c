@@ -86,10 +86,9 @@ static inline bool v2_in_bounds(v2 p) { return p.x < WIDTH && p.y < HEIGHT; }
 #define CASE_CH_PC(p)                                                          \
   case p##_CH:                                                                 \
     return p
-
 #define CASE_PC_CH(p)                                                          \
   case p:                                                                      \
-    return p##_CH;
+    return p##_CH
 
 static u8 fen_piece_id(char c) {
   switch (c | 32) {
@@ -99,7 +98,6 @@ static u8 fen_piece_id(char c) {
     CASE_CH_PC(ROOK);
     CASE_CH_PC(QUEEN);
     CASE_CH_PC(KING);
-
   default:
     return 0;
   }
@@ -165,15 +163,8 @@ char piece_to_ch(piece_t pc) {
 
 void print_pc(piece_t pc) { putchar(piece_to_ch(pc)); }
 
-void print_bd(board_t bd) {
-  for (int y = HEIGHT - 1; y >= 0; --y) {
-    for (int x = 0; x < WIDTH; ++x) {
-      print_pc(bd.handle[v2_idx((v2){(u8)x, (u8)y})]);
-      putchar(' ');
-    }
-    putchar('\n');
-  }
-}
+// Forward declaration because print_bd uses is_check
+void print_bd(board_t bd);
 
 /* =========================
    Move structures & dynamic arrays
@@ -409,10 +400,9 @@ move_list_t list_pseudo_legals(board_t bd) {
 }
 
 /* =========================
-   Pretty printing of moves (fixed static‑buffer bug)
+   Pretty printing of moves
    ========================= */
 
-// Write algebraic notation (e.g. "a1") into a caller‑provided 3‑char buffer.
 void v2_to_algebraic_buf(v2 pos, char buf[3]) {
   buf[0] = 'a' + pos.x;
   buf[1] = '1' + pos.y;
@@ -504,9 +494,10 @@ void mprintf(const char *fmt, ...) {
   va_end(args);
 }
 
-// fully legals here
+/* =========================
+   Check detection and legal move filtering
+   ========================= */
 
-// Test if a square is attacked by any piece of the given colour
 bool is_attacked(board_t bd, v2 square, bool attacker_color) {
   // Knight attacks
   static const int knight_dx[8] = {1, 2, 2, 1, -1, -2, -2, -1};
@@ -535,15 +526,9 @@ bool is_attacked(board_t bd, v2 square, bool attacker_color) {
   }
 
   // Pawn attacks (depends on attacker's colour)
-  int pawn_dir = (attacker_color == WHITE)
-                     ? 1
-                     : -1; // white moves up, so attacks up-left/up-right
-  // Attacker is white: pawn attacks from (x-1, y-1) and (x+1, y-1) relative to
-  // square Attacker is black: pawn attacks from (x-1, y+1) and (x+1, y+1)
-  // relative to square
+  int pawn_dir = (attacker_color == WHITE) ? 1 : -1;
   int pawn_att_y =
-      square.y -
-      pawn_dir; // because pawn stands one step behind the attacked square
+      square.y - pawn_dir; // pawn stands one step behind attacked square
   if (pawn_att_y >= 0 && pawn_att_y < HEIGHT) {
     if (square.x > 0) {
       v2 from = {(u8)(square.x - 1), (u8)pawn_att_y};
@@ -560,8 +545,6 @@ bool is_attacked(board_t bd, v2 square, bool attacker_color) {
   }
 
   // Sliding pieces: rook, bishop, queen
-  // Directions:
-  // 0=up,1=right,2=down,3=left,4=up-right,5=down-right,6=down-left,7=up-left
   static const int slide_dx[8] = {0, 1, 0, -1, 1, 1, -1, -1};
   static const int slide_dy[8] = {1, 0, -1, 0, 1, -1, -1, 1};
   for (int d = 0; d < 8; ++d) {
@@ -570,18 +553,16 @@ bool is_attacked(board_t bd, v2 square, bool attacker_color) {
     while (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
       piece_t p = bd.handle[v2_idx((v2){(u8)x, (u8)y})];
       if (p.id != 0) {
-        // Found a piece
         if (p.color == attacker_color) {
-          // Check if it's the right sliding type
-          if (d < 4) { // orthogonal directions
+          if (d < 4) { // orthogonal
             if (p.id == ROOK || p.id == QUEEN)
               return true;
-          } else { // diagonal directions
+          } else { // diagonal
             if (p.id == BISHOP || p.id == QUEEN)
               return true;
           }
         }
-        break; // block further in this direction
+        break;
       }
       x += slide_dx[d];
       y += slide_dy[d];
@@ -599,32 +580,41 @@ u8 find_king_of_color(board_t bd, bool color) {
   return UINT8_MAX;
 }
 
+// Check whether the side to move is in check
+bool is_check(board_t bd) {
+  u8 king_idx = find_king_of_color(bd, bd.next_to_move);
+  ASSERT(king_idx != UINT8_MAX, "No king of side to move");
+  v2 king_pos = {king_idx % WIDTH, king_idx / WIDTH};
+  return is_attacked(bd, king_pos, !bd.next_to_move);
+}
+
+// Apply a move (returns new board)
 board_t apply_move(board_t bd, move_t mv) {
   ASSERT(v2_in_bounds(mv.next_pos), "Out of bounds");
-
   bd.handle[v2_idx(mv.next_pos)] = bd.handle[v2_idx(mv.current_pos)];
   bd.handle[v2_idx(mv.current_pos)].id = 0;
   bd.handle[v2_idx(mv.current_pos)].color = 0;
+  bd.next_to_move = !bd.next_to_move;
 
-  printf("\n");
-  printf("\n");
-  mprintf("%b", &bd);
-  printf("\n");
-  printf("\n");
+  // Debug prints (optional)
+  putchar('\n');
+  putchar('\n');
+  print_bd(bd);
+  putchar('\n');
+  putchar('\n');
 
   return bd;
 }
 
 // Check whether a move is legal (does not leave own king in check)
 bool is_legal_move(board_t bd, move_t mv) {
-  board_t after = apply_move(bd, mv); // make the move on a copy
+  board_t after = apply_move(bd, mv);
   u8 king_idx;
   if (mv.piece.id == KING) {
     king_idx = v2_idx(mv.next_pos); // king moved – new position
   } else {
     king_idx = find_king_of_color(after, mv.piece.color);
   }
-
   ASSERT(king_idx != UINT8_MAX, "King missing after move");
   v2 king_pos = {king_idx % WIDTH, king_idx / WIDTH};
   bool opponent = !mv.piece.color;
@@ -642,6 +632,42 @@ move_list_t list_legals(board_t bd, move_list_t *pseudo_legals) {
   return ret;
 }
 
+// Print board with optional red highlight for the king that is in check
+void print_bd(board_t bd) {
+
+  // Do this woodo to check for edgecases
+  // where apply_move was not used ||
+  // the next_move was just not set?
+  bool in_check = is_check(bd); // is the side to move in check?
+  bd.next_to_move = !bd.next_to_move;
+  in_check |= is_check(bd);
+  bd.next_to_move = !bd.next_to_move;
+
+  bool checked_king_color =
+      !bd.next_to_move; // colour of the king that is in check (if any)
+                        // the next move is swapped in apply_move so
+                        // its not the next moves king but rather the
+                        // last moves king
+  if (in_check)
+    printf("IN CHECK!!\n");
+  for (int y = HEIGHT - 1; y >= 0; --y) {
+    for (int x = 0; x < WIDTH; ++x) {
+      piece_t pc = bd.handle[v2_idx((v2){x, y})];
+
+      if (in_check && pc.id == KING && pc.color == checked_king_color) {
+        printf("\033[31m");
+        print_pc(pc);
+        printf("\033[0m");
+        putchar(' ');
+      } else {
+        print_pc(pc);
+        putchar(' ');
+      }
+    }
+    putchar('\n');
+  }
+}
+
 /* =========================
    Main (example)
    ========================= */
@@ -654,17 +680,22 @@ int main(void) {
   printf("Initial board:\n");
   print_bd(bd);
   printf("\n");
-  move_list_t pseudo_legals = list_pseudo_legals(bd);
 
+  if (is_check(bd)) {
+    printf("White is in check!\n\n");
+  } else {
+    printf("White is not in check.\n\n");
+  }
+
+  move_list_t pseudo = list_pseudo_legals(bd);
   printf("Pseudo‑legal moves for White:\n");
-  mprintf("%l", &pseudo_legals);
+  mprintf("%l", &pseudo);
 
-  move_list_t legals = list_legals(bd, &pseudo_legals);
+  move_list_t legal = list_legals(bd, &pseudo);
+  printf("\nLegal moves for White:\n");
+  mprintf("%l", &legal);
 
-  printf("Legal moves for White:\n");
-  mprintf("%l", &legals);
-
-  free(pseudo_legals.handle);
-  free(legals.handle);
+  free(pseudo.handle);
+  free(legal.handle);
   return 0;
 }
